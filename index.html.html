@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Firebase Video Chat</title>
+    <script type="module">
+        // Import the functions you need from the SDKs you need
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
+        import { getDatabase, ref, onValue, push } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-database.js";
+
+        // Your web app's Firebase configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyDY4PhQwBUtiRQzzaOP2nIzf1ucCmCtB4A",
+            authDomain: "webcam-f21df.firebaseapp.com",
+            databaseURL: "https://webcam-f21df-default-rtdb.firebaseio.com",
+            projectId: "webcam-f21df",
+            storageBucket: "webcam-f21df.appspot.com",
+            messagingSenderId: "882651213831",
+            appId: "1:882651213831:web:dd7451ab308c7a38027aa2",
+            measurementId: "G-TVHF0P3235"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const database = getDatabase(app);
+
+        const startButton = document.getElementById('start');
+        let localStream;
+        let peerConnections = {};
+
+        startButton.onclick = async () => {
+            startButton.disabled = true;
+            await startVideoChat();
+        };
+
+        async function startVideoChat() {
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            const videoElement = document.createElement('video');
+            videoElement.srcObject = localStream;
+            videoElement.play();
+            document.getElementById('videos').appendChild(videoElement);
+            listenForOffers();
+        }
+
+        function listenForOffers() {
+            const offersRef = ref(database, 'offers');
+            onValue(offersRef, (snapshot) => {
+                snapshot.forEach((childSnapshot) => {
+                    const data = childSnapshot.val();
+                    if (data) {
+                        createPeerConnection(data.from);
+                        createOffer(data.from);
+                    }
+                });
+            });
+        }
+
+        async function createPeerConnection(partnerId) {
+            const peerConnection = new RTCPeerConnection();
+            localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    push(ref(database, 'iceCandidates'), { to: partnerId, candidate: event.candidate });
+                }
+            };
+
+            peerConnection.ontrack = (event) => {
+                const remoteVideo = document.createElement('video');
+                remoteVideo.srcObject = event.streams[0];
+                remoteVideo.play();
+                document.getElementById('videos').appendChild(remoteVideo);
+            };
+
+            peerConnections[partnerId] = peerConnection;
+
+            const candidatesRef = ref(database, 'iceCandidates');
+            onValue(candidatesRef, (snapshot) => {
+                snapshot.forEach((childSnapshot) => {
+                    const data = childSnapshot.val();
+                    if (data.to === partnerId) {
+                        peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                    }
+                });
+            });
+        }
+
+        async function createOffer(partnerId) {
+            const peerConnection = peerConnections[partnerId];
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+
+            push(ref(database, 'offers'), { to: partnerId, from: "USER_ID", offer });
+        }
+    </script>
+</head>
+<body>
+    <button id="start">Start Random Chat</button>
+    <div id="videos"></div>
+</body>
+</html>
