@@ -20,3 +20,29 @@ jobs:
           node --check public/preview.js
       - name: Run server and signaling integration tests
         run: npm test
+      - name: Verify live Render endpoints from GitHub runner
+        run: |
+          node <<'NODE'
+          const origin = 'https://roam-video-chat.onrender.com';
+          async function check(path, valid) {
+            const response = await fetch(origin + path, { signal: AbortSignal.timeout(90000) });
+            if (!response.ok) throw new Error(path + ' HTTP ' + response.status);
+            const text = await response.text();
+            if (!valid(text)) throw new Error(path + ' unexpected content');
+            console.log('PASS', path, response.status, text.length + ' bytes');
+          }
+          async function retry(path, valid) {
+            let last;
+            for (let attempt = 0; attempt < 4; attempt++) {
+              try { return await check(path, valid); }
+              catch (error) { last = error; if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 5000)); }
+            }
+            throw last;
+          }
+          (async () => {
+            await retry('/api/health', text => JSON.parse(text).status === 'ok');
+            await retry('/api/config', text => Array.isArray(JSON.parse(text).iceServers));
+            await retry('/', text => text.includes('Roam') && text.includes('/app.js'));
+            await retry('/app.js', text => text.includes('RTCPeerConnection'));
+          })().catch(error => { console.error(error); process.exitCode = 1; });
+          NODE
