@@ -1,7 +1,7 @@
 name: Verify Roam
 on:
   push:
-    branches: [main]
+    branches: [roam-video-chat-release]
   pull_request:
 permissions:
   contents: read
@@ -17,5 +17,6 @@ jobs:
         run: |
           node --check server.js
           node --check public/app.js
+          node --check public/preview.js
       - name: Run server and signaling integration tests
         run: npm test
