@@ -1,0 +1,22 @@
+# Public-access configuration for Roam. Do not set ROAM_PREVIEW_CODE for open access.
+# Production restrictions: requires durable moderation reports, human review,
+# abuse controls, stronger age safeguards, a TURN relay, and operational testing.
+services:
+  - type: web
+    name: roam-video-chat
+    runtime: node
+    plan: free
+    buildCommand: npm install --omit=dev
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Owner-only filtering is disabled unless a valid salted hash is supplied.
+      - key: PRIVATE_FILTER_PASSWORD_HASH
+        sync: false
+      # Optional: configure both TURN settings when you have a functioning relay.
+      # - key: TURN_URLS
+      #   sync: false
+      # - key: TURN_SHARED_SECRET
+      #   sync: false

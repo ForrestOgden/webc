@@ -1,0 +1,14 @@
+{
+  "name": "roam-video-chat",
+  "version": "1.1.1",
+  "private": true,
+  "description": "Zero-dependency region-aware random video chat built on WebRTC and WebSockets",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
