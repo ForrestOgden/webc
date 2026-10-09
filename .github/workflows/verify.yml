@@ -46,3 +46,18 @@ jobs:
             await retry('/app.js', text => text.includes('RTCPeerConnection'));
           })().catch(error => { console.error(error); process.exitCode = 1; });
           NODE
+  browser-call:
+    needs: automated-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Confirm Chrome installation
+        run: google-chrome --version
+      - name: Install Playwright browser driver
+        run: python -m pip install playwright==1.55.0
+      - name: Test two real Chrome clients with fake camera and microphone devices
+        run: python tests/live-browser.py
