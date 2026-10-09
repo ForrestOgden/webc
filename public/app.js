@@ -3,7 +3,7 @@
   const $ = id => document.getElementById(id);
   const ui = Object.fromEntries([
     'landing','experience','start-button','landing-error','adult-confirm','your-region','target-region','your-gender','gender-target','private-filter','online-count',
-    'owner-trigger','owner-dialog','owner-description','owner-form','owner-password','owner-login','owner-logout','owner-error','password-label',
+    'fallback-toggle','match-expand-row','discovery-online','discovery-searching','growth-online','growth-searching','owner-trigger','owner-dialog','owner-description','owner-form','owner-password','owner-login','owner-logout','owner-error','password-label',
     'remote-video','local-video','self-avatar','waiting-overlay','waiting-title','waiting-subtitle','waiting-eyebrow','waiting-queue','invite-button','remote-label','remote-region','duration','session-status','session-region-label',
     'mic-button','camera-button','skip-button','end-button','exit-top','home-link','report-button','block-button','report-dialog','report-reason','report-detail','send-report',
     'chat-messages','chat-form','chat-input','send-button','toast'
@@ -24,8 +24,11 @@
       for (const [field,val] of [['your-region',settings.region],['target-region',settings.target],['your-gender',settings.gender]]) {
         if ([...ui[field].options].some(o=>o.value===val)) ui[field].value=val;
       }
+      if (typeof settings.expand === 'boolean') ui['fallback-toggle'].checked=settings.expand;
     } catch {}
+    updateFallbackVisibility();
   }
+  function updateFallbackVisibility() { ui['match-expand-row'].hidden=ui['target-region'].value==='any'; }
   async function checkOwner() {
     try {
       const result = await fetch('/api/private/status', { credentials:'same-origin',cache:'no-store' }).then(r=>r.json());
@@ -70,7 +73,8 @@
   function find() {
     if (!state.ready || !state.active) return;
     send('find',{region:ui['your-region'].value,target:ui['target-region'].value,gender:ui['your-gender'].value,
-      genderTarget: state.owner ? ui['gender-target'].value : 'any'});
+      genderTarget: state.owner ? ui['gender-target'].value : 'any',
+      allowWorldwideFallback:ui['fallback-toggle'].checked && ui['target-region'].value!=='any'});
   }
   function setWaiting(title='Finding your person',description='Exploring the world for someone to meet.',badge='Searching the world') {
     ui['waiting-overlay'].hidden=false; ui['waiting-title'].textContent=title;
@@ -173,11 +177,21 @@
       }
     }catch(e){if(state.pc===pc){console.warn('Signaling failed:',e.name);notify('Unable to establish the call. Trying another match…');skip();}}
   }
+  function showStats(info) {
+    if (!Number.isFinite(info.online) || !Number.isFinite(info.searching)) return;
+    for (const id of ['online-count','discovery-online','growth-online']) if (ui[id]) ui[id].textContent=info.online;
+    for (const id of ['discovery-searching','growth-searching']) if (ui[id]) ui[id].textContent=info.searching;
+    if (state.active && state.ready && !state.matchId) {
+      const others=Math.max(0,info.searching-1);
+      ui['waiting-queue'].textContent=others ? `${others} other ${others===1?'person':'people'} searching now` : 'No other people searching yet — invite others to join';
+    }
+  }
   function onMessage(msg) {
     switch(msg.type) {
-      case 'welcome': case 'stats':ui['online-count'].textContent=msg.online??'0';break;
+      case 'welcome': case 'stats':showStats(msg);break;
       case 'ready':state.ready=true;state.sessionId=msg.session;find();break;
       case 'searching':setWaiting();break;
+      case 'search-expanded':ui['waiting-subtitle'].textContent='Your search now includes all available regions.';ui['session-status'].textContent='Searching worldwide';break;
       case 'matched':beginPeer(msg.matchId,msg.initiator,msg.region);break;
       case 'signal':handleSignal(msg);break;
       case 'partner-left':clearCall();setWaiting('Finding someone new','That conversation ended. Looking for your next match…');break;
@@ -281,8 +295,9 @@
   ui['block-button'].addEventListener('click',()=>{
     if(!state.matchId)return notify('No partner to block.');send('block');clearCall();setWaiting('Finding someone new','You will not be paired with that session again.');
   });
-  for(const id of ['your-region','target-region','your-gender']) ui[id].addEventListener('change',saveOptions);
-  async function updateStats(){if(state.active)return;try{const r=await fetch('/api/stats',{cache:'no-store'}).then(x=>x.json());if(Number.isFinite(r.online))ui['online-count'].textContent=r.online;}catch{}}
+  for(const id of ['your-region','target-region','your-gender','fallback-toggle']) ui[id].addEventListener('change',saveOptions);
+  ui['target-region'].addEventListener('change',updateFallbackVisibility);
+  async function updateStats(){if(state.active)return;try{const r=await fetch('/api/stats',{cache:'no-store'}).then(x=>x.json());showStats(r);}catch{}}
   restoreOptions();checkOwner();clearChat();updateStats();setInterval(updateStats,15000);
   window.addEventListener('pagehide',()=>{if(state.active){send('leave');stopMedia();}});
 })();

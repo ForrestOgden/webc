@@ -17,34 +17,38 @@ jobs:
         run: |
           node --check server.js
           node --check public/app.js
+          node --check public/growth.js
           node --check public/preview.js
-      - name: Run server and signaling integration tests
+      - name: Run matchmaking and growth integration tests
         run: npm test
-      - name: Verify live Render endpoints from GitHub runner
+      - name: Verify live Render endpoints
         run: |
           node <<'NODE'
           const origin = 'https://roam-video-chat.onrender.com';
           async function check(path, valid) {
             const response = await fetch(origin + path, { signal: AbortSignal.timeout(90000) });
             if (!response.ok) throw new Error(path + ' HTTP ' + response.status);
-            const text = await response.text();
-            if (!valid(text)) throw new Error(path + ' unexpected content');
-            console.log('PASS', path, response.status, text.length + ' bytes');
+            const body = await response.text();
+            if (!valid(body)) throw new Error(path + ' unexpected content');
+            console.log('PASS', path, response.status, body.length + ' bytes');
           }
           async function retry(path, valid) {
             let last;
-            for (let attempt = 0; attempt < 4; attempt++) {
-              try { return await check(path, valid); }
-              catch (error) { last = error; if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 5000)); }
+            for (let attempt=0;attempt<4;attempt++) {
+              try {return await check(path,valid);} catch (error) { last=error; if (attempt<3) await new Promise(resolve => setTimeout(resolve,5000)); }
             }
             throw last;
           }
           (async () => {
-            await retry('/api/health', text => JSON.parse(text).status === 'ok');
-            await retry('/api/config', text => Array.isArray(JSON.parse(text).iceServers));
-            await retry('/', text => text.includes('Roam') && text.includes('/app.js'));
-            await retry('/app.js', text => text.includes('RTCPeerConnection'));
-          })().catch(error => { console.error(error); process.exitCode = 1; });
+            await retry('/api/health', s => JSON.parse(s).status==='ok');
+            await retry('/api/config', s => Array.isArray(JSON.parse(s).iceServers));
+            await retry('/api/stats', s => Number.isFinite(JSON.parse(s).searching));
+            await retry('/', s => s.includes('roam-discovery') && s.includes('/growth.js'));
+            await retry('/share', s => s.includes('Copy embed code') && s.includes('https://roam-video-chat.onrender.com/share'));
+            await retry('/growth.js', s => s.includes('data-share'));
+            await retry('/growth.css', s => s.includes('.roam-grow'));
+            await retry('/sitemap.xml', s => s.includes('/share'));
+          })().catch(err => { console.error(err); process.exitCode=1; });
           NODE
   browser-call:
     needs: automated-tests
@@ -57,7 +61,7 @@ jobs:
           python-version: '3.11'
       - name: Confirm Chrome installation
         run: google-chrome --version
-      - name: Install Playwright browser driver
+      - name: Install Playwright driver
         run: python -m pip install playwright==1.55.0
-      - name: Test two real Chrome clients with fake camera and microphone devices
+      - name: Verify two browser clients with fake cameras/microphones
         run: python tests/live-browser.py

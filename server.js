@@ -44,6 +44,7 @@ const ADMIN_TTL = 12 * 60 * 60 * 1000;
 const REGIONS = new Set(['any', 'north-america', 'south-america', 'europe', 'asia', 'africa', 'oceania', 'middle-east']);
 const REASONS = new Set(['harassment', 'nudity', 'underage', 'hate', 'spam', 'other']);
 const MAX_FRAME = 32 * 1024;
+const MATCH_EXPAND_MS = Number.isFinite(Number(process.env.MATCH_EXPAND_MS)) && Number(process.env.MATCH_EXPAND_MS) >= 500 ? Number(process.env.MATCH_EXPAND_MS) : 30000;
 const MAX_PEERS_PER_IP = Number(process.env.MAX_PEERS_PER_IP || 8);
 const REPORTS_FILE = process.env.REPORTS_FILE || path.join(__dirname, 'reports.jsonl');
 const peers = new Map();
@@ -90,7 +91,7 @@ function adminCookie(value, request) {
 
 
 function publicStats() {
-  return { online: peers.size, searching: queue.size, connected: [...peers.values()].filter(p => !!p.partner).length / 2 };
+  return { online: [...peers.values()].filter(p => p.ready).length, searching: [...queue].filter(id => peers.get(id)?.ready).length, connected: [...peers.values()].filter(p => p.ready && !!p.partner).length / 2 };
 }
 function sanitizeRegion(value, fallback) { return typeof value === 'string' && REGIONS.has(value) ? value : fallback; }
 function send(peer, type, data = {}) {
@@ -110,12 +111,13 @@ function broadcastStats() {
   const stats = publicStats();
   for (const peer of peers.values()) send(peer, 'stats', stats);
 }
+function effectiveTarget(peer) { return peer.worldwideRelaxed ? 'any' : peer.target; }
 function compatible(a, b) {
   if (a === b || a.partner || b.partner || !a.searching || !b.searching) return false;
-  if (a.target !== 'any' && a.target !== b.region) return false;
+  if (effectiveTarget(a) !== 'any' && effectiveTarget(a) !== b.region) return false;
   if (isAdmin(a) && a.genderTarget !== 'any' && a.genderTarget !== b.gender) return false;
   if (isAdmin(b) && b.genderTarget !== 'any' && b.genderTarget !== a.gender) return false;
-  if (b.target !== 'any' && b.target !== a.region) return false;
+  if (effectiveTarget(b) !== 'any' && effectiveTarget(b) !== a.region) return false;
   if (a.blocked.has(b.session) || b.blocked.has(a.session)) return false;
   if ((a.recent.get(b.session) || 0) > Date.now() || (b.recent.get(a.session) || 0) > Date.now()) return false;
   return true;
@@ -129,6 +131,8 @@ function matchmake() {
     const b = waiting.find(p => compatible(a, p));
     if (!b) continue;
     queue.delete(a.id); queue.delete(b.id);
+    clearTimeout(a.expandTimer); clearTimeout(b.expandTimer);
+    a.expandTimer = null; b.expandTimer = null;
     a.searching = false; b.searching = false;
     a.partner = b.id; b.partner = a.id;
     const matchId = crypto.randomUUID();
@@ -139,6 +143,8 @@ function matchmake() {
   broadcastStats();
 }
 function detach(peer, reason = 'left') {
+  clearTimeout(peer.expandTimer); peer.expandTimer = null;
+  peer.worldwideRelaxed = false;
   queue.delete(peer.id);
   peer.searching = false;
   if (!peer.partner) return null;
@@ -155,10 +161,24 @@ function detach(peer, reason = 'left') {
 }
 function enqueue(peer) {
   if (peer.closed || peer.partner) return;
+  clearTimeout(peer.expandTimer); peer.expandTimer = null;
   peer.searching = true;
+  peer.worldwideRelaxed = false;
   queue.add(peer.id);
   send(peer, 'searching', { target: peer.target });
   matchmake();
+  // Only expand a regional search if the visitor explicitly opted in.
+  if (peer.searching && peer.allowWorldwideFallback && peer.target !== 'any') {
+    peer.expandTimer = setTimeout(() => {
+      peer.expandTimer = null;
+      if (!peer.closed && peer.searching && !peer.partner) {
+        peer.worldwideRelaxed = true;
+        send(peer, 'search-expanded', { target: 'any' });
+        matchmake();
+      }
+    }, MATCH_EXPAND_MS);
+    peer.expandTimer.unref();
+  }
 }
 function noteRecent(a, b) {
   const until = Date.now() + 3 * 60 * 1000;
@@ -211,6 +231,7 @@ function onMessage(peer, text) {
       peer.region = sanitizeRegion(msg.region, peer.region);
       if (peer.region === 'any') peer.region = 'north-america';
       peer.target = sanitizeRegion(msg.target, peer.target);
+      peer.allowWorldwideFallback = msg.allowWorldwideFallback === true;
       peer.gender = GENDERS.has(msg.gender) ? msg.gender : peer.gender;
       const chosenFilter = GENDER_FILTERS.has(msg.genderTarget) ? msg.genderTarget : 'any';
       if (chosenFilter !== 'any' && !isAdmin(peer)) {
@@ -296,6 +317,7 @@ class SocketPeer {
     this.fragment = null;
     this.closed = false; this.ready = false; this.searching = false;
     this.partner = null; this.matchId = null;
+    this.expandTimer = null; this.worldwideRelaxed = false; this.allowWorldwideFallback = false;
     this.region = 'north-america'; this.target = 'any'; this.gender = 'undisclosed'; this.genderTarget = 'any';
     this.adminToken = getCookie(request, 'roam_admin');
     this.limits = new Map(); this.recent = new Map(); this.blocked = new Set();
@@ -352,9 +374,12 @@ class SocketPeer {
 }
 
 const FILES = {
+  '/share': ['share.html', 'text/html; charset=utf-8'],
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/index.html': ['index.html', 'text/html; charset=utf-8'],
   '/styles.css': ['styles.css', 'text/css; charset=utf-8'],
+  '/growth.css': ['growth.css', 'text/css; charset=utf-8'],
+  '/growth.js': ['growth.js', 'application/javascript; charset=utf-8'],
   '/app.js': ['app.js', 'application/javascript; charset=utf-8'],
   '/favicon.svg': ['favicon.svg', 'image/svg+xml'],
   '/social-preview.jpg': ['social-preview.jpg', 'image/jpeg'],
@@ -462,7 +487,7 @@ const server = http.createServer((req, res) => {
   if (route === '/sitemap.xml') {
     const origin = getSiteOrigin(req);
     res.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8', 'Cache-Control': 'public, max-age=300' });
-    res.end(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${origin}/</loc></url><url><loc>${origin}/privacy</loc></url><url><loc>${origin}/terms</loc></url><url><loc>${origin}/rules</loc></url></urlset>`);
+    res.end(`<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>${origin}/</loc></url><url><loc>${origin}/privacy</loc></url><url><loc>${origin}/terms</loc></url><url><loc>${origin}/rules</loc></url><url><loc>${origin}/share</loc></url></urlset>`);
     return;
   }
   if (route === '/api/stats') return json(res, 200, publicStats());
@@ -485,7 +510,7 @@ const server = http.createServer((req, res) => {
   fs.readFile(path.join(PUBLIC, filename), (err, data) => {
     if (err) { res.writeHead(500).end('Server error'); return; }
     res.writeHead(200, {'Content-Type':contentType, 'Cache-Control':filename === 'social-preview.jpg' ? 'public, max-age=86400' : 'no-cache'});
-    if (filename === 'index.html') {
+    if (filename === 'index.html' || filename === 'share.html') {
       res.end(data.toString('utf8').replaceAll('__ROAM_ORIGIN__', getSiteOrigin(req)));
     } else res.end(data);
   });
